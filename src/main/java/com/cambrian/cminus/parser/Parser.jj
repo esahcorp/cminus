@@ -1,0 +1,564 @@
+options {
+    STATIC = false;
+    JDK_VERSION = "1.8";
+    UNICODE_INPUT = true;
+}
+
+PARSER_BEGIN(Parser)
+
+public class Parser {}
+
+PARSER_END(Parser)
+
+/*
+ * Lexical Rules
+ */
+
+TOKEN : {
+      <VOID      : "void">
+    | <CHAR      : "char">
+    | <SHORT     : "short">
+    | <INT       : "int">
+    | <LONG      : "long">
+    | <STRUCT    : "struct">
+    | <UNION     : "union">
+    | <ENUM      : "enum">
+    | <STATIC    : "static">
+    | <EXTERN    : "extern">
+    | <CONST     : "const">
+    | <SIGNED    : "signed">
+    | <UNSIGNED  : "unsigned">
+    | <IF        : "if">
+    | <ELSE      : "else">
+    | <SWITCH    : "switch">
+    | <CASE      : "case">
+    | <DEFAULT_  : "default">
+    | <WHILE     : "while">
+    | <DO        : "do">
+    | <FOR       : "for">
+    | <RETURN    : "return">
+    | <BREAK     : "break">
+    | <CONTINUE  : "continue">
+    | <GOTO      : "goto">
+    | <TYPEDEF   : "typedef">
+    | <IMPORT    : "import">
+    | <SIZEOF    : "sizeof">
+}
+
+TOKEN : {
+    <IDENTIFIER: ["a"-"z", "A"-"Z", "_"](["a"-"z", "A"-"Z", "_", "0"-"9"])*>
+}
+
+TOKEN : {
+    <INTEGER: ["1"-"9"](["1"-"9"])*("U")?("L")?                           // 十进制
+            | "0"["x", "X"](["1"-"9", "a"-"f", "A"-"Z"])+("U")?("L")?     // 十六进制
+            | "0"(["1"-"7"])*("U")?("L")?                                 // 八进制
+            >
+}
+
+SPECIAL_TOKEN : {
+    <SPACES: ([" ", "\t", "\n", "\r", "\f"])+>
+}
+
+SPECIAL_TOKEN : {
+    <LINE_COMMENT: "//"(~["\n", "\r"])*("\n"|"\r\n"|"\r")?>
+}
+
+// 块注释
+<DEFAULT> MORE : {
+    <"/*"> : IN_BLOCK_COMMENT
+}
+<IN_BLOCK_COMMENT> MORE: { <~[]> }
+<IN_BLOCK_COMMENT> SPECIAL_TOKEN : {
+    <BLOCK_COMMENT: "*/"> : DEFAULT
+}
+
+<DEFAULT> MORE : {
+    <"\""> : IN_STRING
+}
+<IN_STRING> MORE : {
+      <(~["\"", "\\", "\n", "\r"])+>
+    | <"\\"(["0"-"7"]){3}>
+    | <"\\"~[]>
+}
+<IN_STRING> TOKEN : {
+    <STRING: "\""> : DEFAULT
+}
+
+<DEFAULT> MORE : {
+    <"'"> : IN_CHARACTER
+}
+<IN_CHARACTER> MORE : {
+    /*
+     * 因为字符只能匹配一次，下一个 Token 必须为 "'"
+     * 为了描述这种状态，引入 <CHARACTER_TERM>
+     *
+     ***********************************************************************/
+      <~["'", "\\", "\n", "\r"]> : CHARACTER_TERM
+    | <"\\"(["0"-"7"]){3}>       : CHARACTER_TERM
+    | <"\\"~[]>                  : CHARACTER_TERM
+}
+<CHARACTER_TERM> TOKEN : {
+    <CHARACTER: "'"> : DEFAULT
+}
+
+/*
+ * Grammar
+ */
+
+void compilation_unit(): {}
+{
+    import_stmts() top_defs() <EOF>
+}
+
+void declaration_file(): {}
+{
+    import_stmts()
+    ( LOOKAHEAD( <EXTERN> typeref() <IDENTIFIER> "(" ) funcdecl()
+    | vardecl()
+    | defconst()
+    | defstruct()
+    | defunion()
+    | typedef()
+    )*
+    <EOF>
+}
+
+void import_stmts(): {}
+{
+    (import_stmt())*
+}
+
+void import_stmt(): {}
+{
+    <IMPORT> name() ("."name())* ";"
+}
+
+/*
+ * 函数或类型定义
+ */
+void top_defs(): {}
+{
+    ( LOOKAHEAD( storage() typeref() <IDENTIFIER> "(" ) defun()           // 区分 fun 和 vars
+    | LOOKAHEAD(3) defvars()                                              // 区分 vars 和 const struct union
+    | defconst()
+    | defstruct()
+    | defunion()
+    | typedef()
+    )*
+}
+
+void defvars(): {}
+{
+    storage() type() name() ["=" expr()] ("," name() ["=" expr()])* ";"
+}
+
+void defconst(): {}
+{
+    <CONST> type() name() "=" expr() ";"
+}
+
+void defun(): {}
+{
+    storage() typeref() name() "(" params() ")" block()
+}
+
+void params(): {}
+{
+      LOOKAHEAD(<VOID> ")") <VOID>             // void 代表没有形参，排除返回值为 void 类型的函数指针
+    | fixedparams() ["," "..."]
+}
+
+void fixedparams(): {}
+{
+    param() ( LOOKAHEAD(2) "," param() )*      // 和变长参数 <, ...> 区分
+}
+
+void param(): {}
+{
+    type() name()
+}
+
+void block(): {}
+{
+    "{" defvar_list() stmts() "}"
+}
+
+void defvar_list(): {}
+{
+    ( defvars() )*
+}
+
+void defstruct(): {}
+{
+    <STRUCT> name() member_list() ";"
+}
+
+void defunion(): {}
+{
+    <UNION> name() member_list() ";"
+}
+
+void member_list(): {}
+{
+    "{" (slot() ";")* "}"
+}
+
+void slot(): {}
+{
+    type() name()
+}
+
+/*
+ * 类型定义
+ */
+void typedef(): {}
+{
+    <TYPEDEF> typeref() <IDENTIFIER> ";"
+}
+
+/*
+ * 头文件函数声明
+ */
+void funcdecl(): {}
+{
+    <EXTERN> typeref() name() "(" params() ")" ";"
+}
+
+/*
+ * 头文件变量声明
+ */
+void vardecl(): {}
+{
+    <EXTERN> type() name() ";"
+}
+
+void type(): {}
+{
+    typeref()
+}
+
+/*
+ * 类型引用
+ */
+void typeref(): {}
+{
+    typeref_base()                      // char
+    ( LOOKAHEAD(2) "[" "]"              // 不定长数组，区别定长 char[]
+    | "[" <INTEGER> "]"                 // 定长数组 char[3]
+    | "*"                               // 指针 char*
+    | "(" param_typerefs() ")"          // 函数指针 char(int)
+    )*
+}
+
+/*
+ * 函数形参部分去掉变量名
+ */
+void param_typerefs(): {}
+{
+      LOOKAHEAD( <VOID> ")" )
+    | fixedparam_typerefs()
+}
+
+void fixedparam_typerefs(): {}
+{
+    ( LOOKAHEAD(2) "," typeref() )*
+}
+
+void typeref_base(): {}
+{
+      <VOID>
+    | <CHAR>
+    | <SHORT>
+    | <INT>
+    | <LONG>
+    | LOOKAHEAD(2) <UNSIGNED> <CHAR>                            // 多个语法规则存在公共部分的时候，需要超前扫描
+    | LOOKAHEAD(2) <UNSIGNED> <SHORT>
+    | LOOKAHEAD(2) <UNSIGNED> <INT>
+    | <UNSIGNED> <LONG>
+    | <STRUCT> <IDENTIFIER>
+    | <UNION> <IDENTIFIER>
+    | LOOKAHEAD({isType(getToken(1).image)}) <IDENTIFIER>       // 只把在 typeref 中定义过的名称识别为类型名
+}
+
+void stmts(): {}
+{
+    ( stmt() )*
+}
+
+void stmt(): {}
+{
+      ";"
+    | LOOKAHEAD(2) labeled_stmt()                // goto 标签
+    | expr() ";"
+    | block()
+    | if_stmt()
+    | while_stmt()
+    | dowhile_stmt()
+    | for_stmt()
+    | switch_stmt()
+    | break_stmt()
+    | continue_stmt()
+    | goto_stmt()
+    | return_stmt()
+}
+
+void labeled_stmt(): {}
+{
+    <IDENTIFIER> ":" stmt()
+}
+
+void if_stmt(): {}
+{
+    <IF> "(" expr() ")" stmt()
+    [ LOOKAHEAD(1) <ELSE> stmt() ]               // 解决空悬 else
+}
+
+void while_stmt(): {}
+{
+    <WHILE> "(" expr() ")" stmt()
+}
+
+void dowhile_stmt(): {}
+{
+    <DO> stmt() <WHILE> "(" expr() ")" ";"
+}
+
+void for_stmt(): {}
+{
+    <FOR> "(" [expr()] ";" [expr()] ";" [expr()] ")" stmt()
+}
+
+void switch_stmt(): {}
+{
+    <SWITCH> "(" expr() ")" "{" case_clauses() "}"
+}
+
+void case_clauses(): {}
+{
+    ( case_clause() )*
+    [ default_clause() ]
+}
+
+void case_clause(): {}
+{
+    cases() case_body()
+}
+
+void cases(): {}
+{
+    ( <CASE> primary() ":" )+
+}
+
+void default_clause(): {}
+{
+    <DEFAULT_> ":" case_body()
+}
+
+void case_body(): {}
+{
+    ( stmt() )+
+}
+
+void goto_stmt(): {}
+{
+    <GOTO> <IDENTIFIER> ";"
+}
+
+void break_stmt(): {}
+{
+    <BREAK> ";"
+}
+
+void continue_stmt(): {}
+{
+    <CONTINUE> ";"
+}
+
+void return_stmt(): {}
+{
+      LOOKAHEAD(2) <RETURN> ";"
+    | <RETURN> expr() ";"
+}
+
+void expr(): {}
+{
+      LOOKAHEAD( term() "=" )           term() "=" expr()                 // 赋值
+    | LOOKAHEAD( term() opassign_op() ) term() opassign_op() expr()       // 复合赋值
+    | expr10()                                                            // 三元运算 + 二元运算
+}
+
+/*
+ * 复合赋值运算符
+ */
+void opassign_op(): {}
+{
+      "+="
+    | "-="
+    | "*="
+    | "/="
+    | "%="
+    | "&="
+    | "|="
+    | "^="
+    | "<<="
+    | ">>="
+}
+
+/*
+ * 条件表达式（三元运算符）优先级最低
+ */
+void expr10(): {}
+{
+    expr9() ["?" expr() ":" expr10() ]
+}
+
+/*
+ * 逻辑或
+ */
+void expr9(): {}
+{
+    expr8() ( "||" expr8() )*
+}
+
+/*
+ * 逻辑与
+ */
+void expr8(): {}
+{
+    expr7() ("&&" expr7())*
+}
+
+/*
+ * 关系判断符
+ */
+void expr7(): {}
+{
+    expr6() ( ">" expr6()
+            | "<" expr6()
+            | ">=" expr6()
+            | "<=" expr6()
+            | "==" expr6()
+            | "!=" expr6()
+    )*
+}
+
+/*
+ * 位或
+ */
+void expr6(): {}
+{
+    expr5() ( "|" expr5() )*
+}
+
+/*
+ * 按位异否
+ */
+void expr5(): {}
+{
+    expr4() ( "^" expr4() )*
+}
+
+/*
+ * 位与
+ */
+void expr4(): {}
+{
+    expr3() ( "&" expr3() )*
+}
+
+/*
+ * 移位符 >> <<
+ */
+void expr3(): {}
+{
+    expr2() ( ">>" expr2() | "<<" expr2() )*
+}
+
+/*
+ * + -
+ */
+void expr2(): {}
+{
+    expr1() ( "+" expr1() | "-" expr1() )*
+}
+
+/*
+ * * / %
+ */
+void expr1(): {}
+{
+    term() ( "*" term() | "/" term() | "%" term() )*
+}
+
+/*
+ * term 可以 cast，unary 不能
+ */
+void term(): {}
+{
+      LOOKAHEAD( "(" type() )  "(" type() ")" term()         // cast 转换
+    | unary()
+}
+
+/*
+ * 带有前置运算符的项的符号
+ */
+void unary(): {}
+{
+      "++" unary()                                           // 前置 ++
+    | "--" unary()                                           // 前置 --
+    | "+"  term()                                            // 一元 +
+    | "-"  term()                                            // 一元 -
+    | "!"  term()                                            // 逻辑非
+    | "~"  term()                                            // 按位取反
+    | "*"  term()                                            // 指针引用
+    | "&"  term()                                            // 地址运算符
+    | LOOKAHEAD(3) <SIZEOF> "(" type() ")"                   // sizeof(类型)
+    | <SIZEOF> unary()                                       // sizeof 表达式
+    | postfix()                                              // 后缀
+}
+
+/*
+ * 后缀
+ */
+void postfix(): {}
+{
+    primary()
+    ( "++"                                                   // 后置 ++
+    | "--"                                                   // 后置 --
+    | "["  expr() "]"                                        // 数组引用
+    | "."  name()                                            // 结构体或联合体的成员的引用
+    | "->" name()                                            // 通过指针的结构体或联合体的成员的引用
+    | "("  args() ")"                                        // 函数调用
+    )*
+}
+
+/*
+ * 参数
+ */
+void args(): {}
+{
+    [ expr() ( "," expr() )* ]
+}
+
+void name(): {}
+{
+    <IDENTIFIER>
+}
+
+void storage(): {}
+{
+    [<STATIC>]
+}
+
+/*
+ * 字面量
+ */
+void primary(): {}
+{
+      <INTEGER>
+    | <CHARACTER>
+    | <STRING>
+    | <IDENTIFIER>
+    | "(" expr() ")"                                           // 括号围起来的表达式
+}
